@@ -1,0 +1,185 @@
+#include <Arduino.h>
+#include <Arduino_FreeRTOS.h>
+#include <semphr.h>
+
+//CONSTANTS
+// button on 2
+// led on 8
+#define BUTTON_PIN  2
+#define PWM_PIN     3
+#define LED_PIN     8
+#define DEBOUNCE_DELAY 500
+
+//Semaphore
+SemaphoreHandle_t button_resource = NULL;
+
+//Variables
+volatile uint8_t duty_select = 0;
+volatile uint8_t duty_cycle = 0;
+volatile uint8_t ticks = 0;
+uint8_t lastButtonState = LOW;
+uint8_t stableButtonState = LOW;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50;  
+
+void dutyCycle_task(void *params);
+void readButton(void *params);
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(9600);
+  setupSemaphore();
+  setup_timer2();
+  setup_button();
+
+  xTaskCreate(dutyCycle_task, "DutyCycle", 128, NULL, 2, NULL);
+  xTaskCreate(readButton, "Button", 128, NULL, 1, NULL);
+}
+
+void loop() {
+
+}
+
+void setupSemaphore(){
+
+  if(button_resource == NULL){
+    button_resource = xSemaphoreCreateMutex();
+
+    if(button_resource != NULL){
+      xSemaphoreGive(button_resource);
+    }
+  }
+
+  xSemaphoreTake(button_resource, portMAX_DELAY);
+
+}
+
+void dutyCycle_task(void *params){
+  (void) params;
+
+  for(;;){
+    if(xSemaphoreTake(button_resource, portMAX_DELAY) == pdTRUE){
+      applyDutyCycle();
+    }
+  }
+}
+
+void setup_button(){
+
+  //PIN 8 as output 
+  DDRB |= (1 << PB0);
+
+  //PIN 2 as input
+  DDRD &= ~(1 << BUTTON_PIN);
+  PORTD &= ~(1 << BUTTON_PIN);
+
+  //PIN 3 as output PWM
+  DDRD |= (1 << PWM_PIN);
+}
+
+void setup_timer2(){
+
+  cli(); // turn off global interrupts
+
+  TCCR2A = 0;
+  TCCR2B = 0;
+  TCNT2 = 0;
+  TCCR2A |= (1 << WGM21);
+  TCCR2B |= (1 << CS22);
+  OCR2A = 62;
+  TIMSK2 |= (1 << OCIE2A);
+
+  sei(); // turn on global interrupts
+
+}
+
+void applyDutyCycle(){
+  
+  duty_select++;
+  // switches between duty cycles
+  switch(duty_select){
+    case 1:
+      duty_cycle = 1;
+      break;
+
+    case 2:
+      duty_cycle = 2;
+      break;
+
+    case 3:
+      duty_cycle = 3;
+      break;
+
+    case 4:
+      duty_cycle = 4;
+      break;
+
+    case 5:
+      duty_cycle = 3;
+      break;
+
+    case 6:
+      duty_cycle = 2;
+      break;
+
+    case 7:
+      duty_cycle = 1;
+      break;
+
+    default:
+      duty_cycle = 0;
+      break;
+  }
+
+  if(duty_select > 7){
+    duty_select = 0;
+  }
+
+}
+// to read button presses
+void readButton(void *params) {
+  (void) params;
+  for(;;){
+    uint8_t currentState = (PIND & (1 << PD2)) ? HIGH : LOW;
+    unsigned long currentTime = millis();
+
+    if (currentState != lastButtonState) {
+        lastDebounceTime = currentTime; 
+    }
+
+    if ((currentTime - lastDebounceTime) > debounceDelay) {
+        if (currentState != stableButtonState) {
+            stableButtonState = currentState;
+
+            if (stableButtonState == HIGH) {
+                lastButtonState = currentState;
+                xSemaphoreGive(button_resource);
+            }
+        }
+    }
+
+    lastButtonState = currentState;
+    vTaskDelay(1);
+  }
+
+  
+}
+
+ISR(TIMER2_COMPA_vect){
+
+  ticks++;
+  if(ticks >= 5){
+    ticks = 0;
+  }
+  
+  uint8_t PWM_value = (ticks < duty_cycle);
+
+  if(PWM_value){
+    PORTD |= (1 << PD3);
+  }
+  else{
+    PORTD &= ~(1 << PD3);
+  }
+
+}
+
